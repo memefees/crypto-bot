@@ -31,9 +31,7 @@ class Database:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_username ON accounts(twitter_username)")
             conn.commit()
 
-    def add_account(self, twitter_username: str, twitter_url: str,
-                    wallet_address: str, balance_eth: float) -> bool:
-        """Returns True if new record was inserted, False if duplicate."""
+    def add_account(self, twitter_username, twitter_url, wallet_address, balance_eth):
         with self._lock:
             try:
                 with self._get_conn() as conn:
@@ -51,7 +49,6 @@ class Database:
                     conn.commit()
                     return True
             except sqlite3.IntegrityError:
-                # Duplicate — update balance
                 with self._get_conn() as conn:
                     conn.execute("""
                         UPDATE accounts SET balance_eth = ?
@@ -60,7 +57,7 @@ class Database:
                     conn.commit()
                 return False
 
-    def get_accounts(self, limit: int = 50) -> list[dict]:
+    def get_accounts(self, limit=50):
         with self._get_conn() as conn:
             rows = conn.execute("""
                 SELECT twitter_username, twitter_url, wallet_address, balance_eth, discovered_at
@@ -70,7 +67,7 @@ class Database:
             """, (limit,)).fetchall()
         return [dict(r) for r in rows]
 
-    def get_stats(self) -> dict:
+    def get_stats(self):
         with self._get_conn() as conn:
             row = conn.execute("""
                 SELECT
