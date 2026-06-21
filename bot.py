@@ -3,7 +3,7 @@ import logging
 import os
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from database import Database
 from twitter_scanner import TwitterScanner
@@ -84,15 +84,18 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def main():
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+async def run():
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("list", list_accounts))
     app.add_handler(CommandHandler("stats", stats))
     logger.info("Bot started...")
-    app.run_polling()
+    async with app:
+        await app.start()
+        await app.updater.start_polling()
+        await asyncio.Event().wait()  # держим бота живым
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(run())
