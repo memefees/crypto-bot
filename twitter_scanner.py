@@ -14,165 +14,73 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
-# Nitter RSS не требует JS и работает как обычный XML
-NITTER_INSTANCES = [
-    "https://nitter.poast.org",
-    "https://nitter.1d4.us",
-    "https://nitter.privacydev.net",
-    "https://nitter.kavin.rocks",
-    "https://nitter.net",
-]
-
 
 class TwitterScanner:
     def __init__(self, bearer_token: str = ""):
         self._timeout = aiohttp.ClientTimeout(total=30)
 
-    async def search_accounts(self, keyword: str, max_results: int = 100) -> list[dict]:
+    async def search_accounts(self, keyword: str, max_results: int = 100) -> list:
         accounts = {}
 
-        # Метод 1: Nitter RSS поиск
-        rss_results = await self._search_via_rss(keyword)
-        accounts.update(rss_results)
-        logger.info(f"RSS: {len(rss_results)} аккаунтов")
+        # Метод 1: DuckDuckGo HTML (работает без JS)
+        ddg = await self._search_duckduckgo(keyword)
+        accounts.update(ddg)
+        logger.info(f"DuckDuckGo: {len(ddg)} аккаунтов")
 
-        # Метод 2: Nitter HTML поиск
-        if len(accounts) < 10:
-            html_results = await self._search_via_html(keyword)
-            for u, d in html_results.items():
-                if u not in accounts:
-                    accounts[u] = d
-                else:
-                    merged = set(accounts[u]["wallets"]) | set(d["wallets"])
-                    accounts[u]["wallets"] = list(merged)
-            logger.info(f"HTML: {len(html_results)} аккаунтов")
-
-        # Метод 3: DuckDuckGo (не блокирует серверы)
+        # Метод 2: Bing поиск
         if len(accounts) < 5:
-            ddg_results = await self._search_duckduckgo(keyword)
-            for u, d in ddg_results.items():
+            bing = await self._search_bing(keyword)
+            for u, d in bing.items():
                 if u not in accounts:
                     accounts[u] = d
-            logger.info(f"DDG: {len(ddg_results)} аккаунтов")
+            logger.info(f"Bing: {len(bing)} аккаунтов")
+
+        # Метод 3: поиск через Wayback Machine / общедоступные индексы
+        if len(accounts) < 5:
+            cc = await self._search_commoncrawl(keyword)
+            for u, d in cc.items():
+                if u not in accounts:
+                    accounts[u] = d
+            logger.info(f"CommonCrawl: {len(cc)} аккаунтов")
 
         logger.info(f"Итого: {len(accounts)} аккаунтов с кошельками")
         return list(accounts.values())
 
-    async def _search_via_rss(self, keyword: str) -> dict:
-        """Nitter RSS — работает без JS, возвращает XML"""
-        accounts = {}
-        query = keyword.replace(" ", "+") + "+0x"
-
-        async with aiohttp.ClientSession(headers=HEADERS, timeout=self._timeout) as session:
-            for instance in NITTER_INSTANCES:
-                try:
-                    url = f"{instance}/search/rss?q={query}&f=tweets"
-                    async with session.get(url) as resp:
-                        if resp.status != 200:
-                            continue
-                        xml = await resp.text()
-                        if "<item>" not in xml:
-                            continue
-
-                        soup = BeautifulSoup(xml, "xml")
-                        for item in soup.find_all("item"):
-                            # Автор
-                            creator = item.find("dc:creator")
-                            if not creator:
-                                creator = item.find("creator")
-                            username = creator.get_text(strip=True).lstrip("@") if creator else None
-
-                            # Текст
-                            desc = item.find("description")
-                            text = desc.get_text() if desc else ""
-
-                            wallets = set(ETH_ADDRESS_RE.findall(text))
-                            if wallets and username:
-                                if username not in accounts:
-                                    accounts[username] = {
-                                        "username": username,
-                                        "url": f"https://x.com/{username}",
-                                        "wallets": list(wallets),
-                                    }
-                                else:
-                                    merged = set(accounts[username]["wallets"]) | wallets
-                                    accounts[username]["wallets"] = list(merged)
-
-                        if accounts:
-                            logger.info(f"RSS работает: {instance}")
-                            break
-
-                except Exception as e:
-                    logger.warning(f"RSS {instance}: {e}")
-
-        return accounts
-
-    async def _search_via_html(self, keyword: str) -> dict:
-        """Nitter HTML поиск"""
-        accounts = {}
-        query = keyword.replace(" ", "+") + "+0x"
-
-        async with aiohttp.ClientSession(headers=HEADERS, timeout=self._timeout) as session:
-            for instance in NITTER_INSTANCES:
-                try:
-                    url = f"{instance}/search?q={query}&f=tweets"
-                    async with session.get(url) as resp:
-                        if resp.status != 200:
-                            continue
-                        html = await resp.text()
-                        if "timeline-item" not in html:
-                            continue
-
-                        soup = BeautifulSoup(html, "html.parser")
-                        for item in soup.select(".timeline-item"):
-                            tag = item.select_one(".username")
-                            if not tag:
-                                continue
-                            username = tag.get_text(strip=True).lstrip("@")
-                            content = item.select_one(".tweet-content")
-                            text = content.get_text() if content else ""
-                            wallets = set(ETH_ADDRESS_RE.findall(text))
-                            if wallets:
-                                if username not in accounts:
-                                    accounts[username] = {
-                                        "username": username,
-                                        "url": f"https://x.com/{username}",
-                                        "wallets": list(wallets),
-                                    }
-
-                        if accounts:
-                            break
-                except Exception as e:
-                    logger.warning(f"HTML {instance}: {e}")
-
-        return accounts
-
     async def _search_duckduckgo(self, keyword: str) -> dict:
-        """DuckDuckGo не блокирует серверные запросы"""
         accounts = {}
-        query = f'site:x.com {keyword} 0x'
-        url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
+        query = f'site:x.com {keyword} "0x"'
 
         async with aiohttp.ClientSession(headers=HEADERS, timeout=self._timeout) as session:
             try:
+                # DuckDuckGo HTML версия
+                url = "https://html.duckduckgo.com/html/"
                 async with session.post(url, data={"q": query}) as resp:
                     if resp.status != 200:
+                        logger.warning(f"DDG статус: {resp.status}")
                         return accounts
                     html = await resp.text()
 
                 soup = BeautifulSoup(html, "html.parser")
+                skip = {"search", "home", "explore", "i", "hashtag", "intent",
+                        "share", "login", "signup", "about", "settings"}
+
                 for result in soup.select(".result"):
+                    # URL результата
                     link = result.select_one(".result__url")
                     snippet = result.select_one(".result__snippet")
-                    if not link or not snippet:
+                    if not snippet:
                         continue
 
-                    href = link.get_text()
+                    href = link.get_text() if link else ""
                     m = re.search(r'x\.com/([A-Za-z0-9_]{1,50})', href)
                     if not m:
+                        # Ищем в тексте сниппета
+                        m = re.search(r'x\.com/([A-Za-z0-9_]{1,50})', snippet.get_text())
+                    if not m:
                         continue
+
                     username = m.group(1)
-                    if username.lower() in {"search", "home", "explore", "i", "hashtag"}:
+                    if username.lower() in skip:
                         continue
 
                     text = snippet.get_text()
@@ -183,7 +91,96 @@ class TwitterScanner:
                             "url": f"https://x.com/{username}",
                             "wallets": list(wallets),
                         }
+
             except Exception as e:
-                logger.error(f"DuckDuckGo: {e}")
+                logger.error(f"DuckDuckGo ошибка: {e}")
+
+        return accounts
+
+    async def _search_bing(self, keyword: str) -> dict:
+        accounts = {}
+        query = f'site:x.com {keyword} 0x'
+        url = f"https://www.bing.com/search?q={query.replace(' ', '+')}&count=50"
+
+        async with aiohttp.ClientSession(headers=HEADERS, timeout=self._timeout) as session:
+            try:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Bing статус: {resp.status}")
+                        return accounts
+                    html = await resp.text()
+
+                soup = BeautifulSoup(html, "html.parser")
+                skip = {"search", "home", "explore", "i", "hashtag", "intent",
+                        "share", "login", "signup", "about", "settings"}
+
+                for result in soup.select(".b_algo"):
+                    a = result.select_one("a[href]")
+                    snippet = result.select_one(".b_caption p")
+                    if not a or not snippet:
+                        continue
+
+                    href = a.get("href", "")
+                    m = re.search(r'x\.com/([A-Za-z0-9_]{1,50})', href)
+                    if not m:
+                        continue
+
+                    username = m.group(1)
+                    if username.lower() in skip:
+                        continue
+
+                    text = snippet.get_text()
+                    wallets = set(ETH_ADDRESS_RE.findall(text))
+                    if wallets and username not in accounts:
+                        accounts[username] = {
+                            "username": username,
+                            "url": f"https://x.com/{username}",
+                            "wallets": list(wallets),
+                        }
+
+            except Exception as e:
+                logger.error(f"Bing ошибка: {e}")
+
+        return accounts
+
+    async def _search_commoncrawl(self, keyword: str) -> dict:
+        """Поиск через CommonCrawl CDX API — индекс реальных страниц x.com"""
+        accounts = {}
+        url = "https://index.commoncrawl.org/CC-MAIN-2024-51-index"
+        params = {
+            "url": "x.com/*",
+            "matchType": "prefix",
+            "output": "json",
+            "filter": f"=mime:text/html",
+            "limit": "100",
+            "fl": "url,filename,offset,length",
+        }
+
+        async with aiohttp.ClientSession(headers=HEADERS, timeout=self._timeout) as session:
+            try:
+                async with session.get(url, params=params) as resp:
+                    if resp.status != 200:
+                        return accounts
+                    text = await resp.text()
+
+                import json
+                for line in text.strip().split("\n")[:20]:
+                    try:
+                        record = json.loads(line)
+                        page_url = record.get("url", "")
+                        m = re.search(r'x\.com/([A-Za-z0-9_]{1,50})', page_url)
+                        if m:
+                            username = m.group(1)
+                            if username not in accounts:
+                                accounts[username] = {
+                                    "username": username,
+                                    "url": f"https://x.com/{username}",
+                                    "wallets": [],
+                                }
+                    except Exception:
+                        continue
+
+            except Exception as e:
+                logger.error(f"CommonCrawl ошибка: {e}")
 
         return accounts
